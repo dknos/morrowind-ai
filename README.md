@@ -2,6 +2,8 @@
 
 LLM-driven NPC dialogue for **OpenMW 0.49** — persistent per-NPC memory, live conversation, runs alongside the unmodified game on Windows or Linux.
 
+![Vodunius Nuccius asking the player about his ring — live LLM dialogue with memory across turns](docs/screenshot-vodunius.png)
+
 ## What it does
 
 - Press **H** near any NPC to lock onto them.
