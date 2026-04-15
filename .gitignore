@@ -1,0 +1,31 @@
+# Runtime data — NEVER commit
+chroma/
+logs/
+ipc/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+env/
+
+# Secrets
+.env
+.env.*
+*.key
+*secret*
+credentials.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local PM2 / process manager state
+.pm2/
+ecosystem.local.*

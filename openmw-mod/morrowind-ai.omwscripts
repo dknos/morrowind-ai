@@ -1,0 +1,17 @@
+# morrowind-ai.omwscripts
+# OpenMW 0.49 script registration file for the Morrowind AI NPC mod.
+#
+# Scope notes:
+#   GLOBAL scripts have file IO (io/os) and world.* access.
+#   PLAYER scripts have UI, input, nearby.* but NO file IO in 0.49 sandbox.
+#
+# Dialogue pipeline:
+#   PLAYER dialogue_ui.lua  -- keybind H, captures input, sends global event
+#   GLOBAL ipc_client.lua   -- receives event, writes request.json, polls response.json, relays reply
+#   GLOBAL world_events.lua -- event-driven world actions (spawn/drop/message)
+#
+# npc_detector.lua is NOT registered — needs rework for 0.49 file-IO sandbox; non-critical for MVP.
+
+GLOBAL: scripts/ipc_client.lua
+GLOBAL: scripts/world_events.lua
+PLAYER: scripts/dialogue_ui.lua

@@ -1,0 +1,84 @@
+# Morrowind AI — Isolated Configuration
+# Read API keys from ~/.nemoclaw_env — never hardcode secrets here
+
+# ---------------------------------------------------------------------------
+# Provider / model selection per agent
+# ---------------------------------------------------------------------------
+# Each agent reads its own block and calls providers.factory.get_provider().
+# To switch any agent's backend: change provider + model, then restart mw-bridge.
+#
+# Supported providers:
+#   gemini    — Google Gemini (GOOGLE_API_KEY in ~/.nemoclaw_env)
+#   openai    — OpenAI        (OPENAI_API_KEY in ~/.nemoclaw_env)
+#   anthropic — Claude        (ANTHROPIC_API_KEY in ~/.nemoclaw_env)
+#   ollama    — Local Ollama  (no auth, add base_url to override default)
+#   llamacpp  — llama.cpp     (no auth, add base_url to override default)
+#
+# NOTE: pixel_agent requires a vision-capable model.
+#       llamacpp does NOT support vision — it will warn and drop the image.
+# ---------------------------------------------------------------------------
+models:
+  lore_agent:
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    temperature: 0.8
+  pixel_agent:        # needs vision support — do NOT use llamacpp here
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    temperature: 0.3
+  obs_director:
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    temperature: 0.2
+  # Example: switch lore_agent to local Ollama
+  # lore_agent:
+  #   provider: ollama
+  #   model: llama3.2
+  #   base_url: http://localhost:11434
+  #   temperature: 0.8
+  # Example: switch obs_director to llama.cpp
+  # obs_director:
+  #   provider: llamacpp
+  #   base_url: http://localhost:8080
+  #   temperature: 0.2
+
+# ---------------------------------------------------------------------------
+# Legacy Gemini section — kept for backwards compatibility with old code.
+# New agents use models: above instead.
+# ---------------------------------------------------------------------------
+gemini:
+  model: gemini-3.1-flash-lite-preview
+  lore_agent_temp: 0.8
+  pixel_agent_temp: 0.3
+  director_agent_temp: 0.2
+  max_retries: 3
+
+ipc:
+  dir: /home/nemoclaw/morrowind-ai/ipc
+  events_dir: /home/nemoclaw/morrowind-ai/ipc/events
+  poll_interval_ms: 100
+
+memory:
+  chroma_dir: /home/nemoclaw/morrowind-ai/chroma
+  history_limit: 10
+
+obs:
+  host: localhost
+  port: 4455
+  password: ""  # set if OBS websocket has a password
+  enabled: false  # set to true when OBS is running
+
+stream:
+  enabled: false  # set true to activate YouTube live chat -> game events
+  youtube_video_id: ""  # set YouTube live video_id before enabling
+  chat_poll_interval: 1.0
+
+pixel:
+  enabled: true
+  capture_interval_sec: 3
+  window_title: OpenMW
+  resize_to: [1024, 768]
+
+logs:
+  dir: /home/nemoclaw/morrowind-ai/logs
+  level: INFO
