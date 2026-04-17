@@ -13,6 +13,7 @@ LLM-driven NPC dialogue for **OpenMW 0.49** — persistent per-NPC memory, live 
 - NPCs can respond with actions: follow you, flee, turn hostile, or open trade.
 - Nearby NPC pairs hold ambient conversations without player involvement (radiant D2D system).
 - Every exchange is stored in a per-NPC ChromaDB vector collection, so NPCs remember you across sessions.
+- Per-NPC **opinion vector** + **mood residue** + 3 auto-generated **life facts** colour every reply — a guard you angered last week is colder today, an innkeeper you charmed recalls it in her tone. Decays toward neutral over real-time hours. (Gated by `features.disposition`.)
 
 ## Why this exists (the novel part)
 
@@ -113,6 +114,8 @@ Leave `enabled: false` for normal single-player use.
 | Windows sandbox IPC (print + VFS) | Working |
 | Radiant NPC-to-NPC ambient D2D | **Added — not yet field-tested** |
 | NPC action responses (follow/flee/attack/trade) | **Added — not yet field-tested** |
+| Disposition + mood residue + life facts | **Added — not yet field-tested** (flag `features.disposition`) |
+| Theory-of-mind prompt rule | Added |
 | NPC faction/race personality grounding | Working |
 | YouTube live-chat → game events | Stub (disabled by default) |
 | Linux direct-file IPC path | Working |
@@ -128,11 +131,14 @@ Tested on OpenMW 0.49 (Windows + WSL), Gemini 3.1 Flash Lite Preview, ChromaDB e
 
 ## Roadmap
 
-- [ ] Test radiant D2D and NPC actions in-game, fix any issues
+- [ ] Test radiant D2D, NPC actions, and disposition layer in-game, fix any issues
 - [ ] Wire `ACTION:follow` / `ACTION:attack` to actual OpenMW AI packages
-- [ ] Faction disposition modifiers based on conversation outcomes
+- [ ] Gossip propagation — NPC A tells NPC B something about the player, with drift
+- [ ] Vertex implicit prompt caching for shared preamble (~94% input-token cut)
+- [ ] Per-NPC telemetry (latency, cache hit rate, tokens per minute)
+- [ ] Voiced responses via TTS pipeline (Orpheus/Kokoro + emotion-tag audio)
+- [ ] Creature NPCs: non-verbal narrated layer with sensory state machine + flock broadcast
 - [ ] Proactive NPC greeting radius (NPC initiates when player enters range)
-- [ ] Voiced responses via TTS pipeline
 
 ## License
 

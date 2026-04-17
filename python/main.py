@@ -227,11 +227,25 @@ async def main() -> None:
     _ensure_dirs(config)
 
     # 5. Initialise core components
-    from memory.chroma_memory import NPCMemory
-    memory = NPCMemory(
-        persist_dir=config.get("memory", {}).get("chroma_dir", str(_PROJECT / "chroma"))
-    )
+    from memory.chroma_memory import NPCMemory, DispositionStore
+    chroma_dir = config.get("memory", {}).get("chroma_dir", str(_PROJECT / "chroma"))
+    memory = NPCMemory(persist_dir=chroma_dir)
     logger.info("NPCMemory initialised")
+
+    # DispositionStore — sidecar JSON with opinion, mood residue, life facts.
+    # Gated by features.disposition (default: on).
+    dispositions = None
+    if config.get("features", {}).get("disposition", True):
+        try:
+            dispositions = DispositionStore(
+                pathlib.Path(chroma_dir) / "dispositions.json"
+            )
+            logger.info("DispositionStore initialised")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DispositionStore failed: %s — disposition features off", exc)
+            dispositions = None
+    else:
+        logger.info("features.disposition=false — skipping DispositionStore")
 
     # LoreAgent — use stub if real agent not yet written
     LoreAgentClass = _try_import_lore_agent()
@@ -288,7 +302,11 @@ async def main() -> None:
 
     # OpenMWLogBridge (Windows IPC via openmw.log tailing)
     from openmw_log_bridge import OpenMWLogBridge
-    log_bridge = OpenMWLogBridge(config, lore_agent, memory, d2d_agent=d2d_agent)
+    log_bridge = OpenMWLogBridge(
+        config, lore_agent, memory,
+        d2d_agent=d2d_agent,
+        dispositions=dispositions,
+    )
     logger.info("OpenMWLogBridge initialised")
 
     # IPCBridge (always runs — this is the core of the system)

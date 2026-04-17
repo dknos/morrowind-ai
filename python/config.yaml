@@ -67,6 +67,13 @@ radiant:
   # same NPC pair can trigger; this is just the Python-side gate if needed.
   min_interval_s: 60
 
+# Per-NPC disposition, mood residue, and life-facts layer.
+# Stored in chroma_dir/dispositions.json. When off, the lore_agent prompt is
+# unchanged from its pre-disposition shape — useful for isolating failures
+# while radiant D2D / ACTION handling are still being field-tested.
+features:
+  disposition: true
+
 ipc:
   dir: /home/nemoclaw/morrowind-ai/ipc
   events_dir: /home/nemoclaw/morrowind-ai/ipc/events

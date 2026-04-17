@@ -15,7 +15,7 @@ Usage:
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from providers.factory import get_provider
 from providers.base import log_llm_response
@@ -130,6 +130,9 @@ def _build_system_prompt(
     npc_class: str,
     npc_faction: str,
     location: str,
+    disposition_band: Optional[str] = None,
+    last_mood: Optional[str] = None,
+    life_facts: Optional[list[str]] = None,
 ) -> str:
     race_blurb = RACE_PERSONALITIES.get(
         npc_race,
@@ -154,6 +157,24 @@ def _build_system_prompt(
     if faction_blurb:
         parts += ["", "FACTION ROLE:", faction_blurb]
 
+    if life_facts:
+        parts += [
+            "",
+            "PERSONAL BACKGROUND (non-plot; reference naturally if it fits):",
+            *[f"- {f}" for f in life_facts[:5]],
+        ]
+
+    if disposition_band:
+        parts += ["", "RELATIONSHIP:", disposition_band]
+
+    if last_mood and last_mood != "neutral":
+        parts += [
+            "",
+            f"EMOTIONAL RESIDUE: At your last encounter you felt {last_mood} toward "
+            "the player. A quiet echo of that still colours your tone, even if you "
+            "try to hide it.",
+        ]
+
     parts += [
         "",
         "RULES:",
@@ -162,6 +183,7 @@ def _build_system_prompt(
         "- Use lore-accurate terminology: 'outlander', 'n'wah', 'sera', 'muthsera', 'foul murder', etc. when appropriate to the character.",
         "- Acknowledge the player's words directly. Be specific, not generic.",
         "- Do not invent lore that contradicts Morrowind canon.",
+        "- Before replying, briefly consider what this NPC believes the player wants right now — let that quiet inference shape your tone without stating it aloud.",
         "",
         EMOTION_GUIDE,
         "",
@@ -285,12 +307,21 @@ class LoreAgent:
         is_greeting: bool = request.get("is_greeting", player_input == "")
         conversation_history: list[dict] = request.get("conversation_history", [])
 
+        # Optional disposition context injected by the bridge. When the feature
+        # flag is off these are all None and the prompt is unchanged.
+        disposition_band = request.get("disposition_band")
+        last_mood        = request.get("last_mood")
+        life_facts       = request.get("life_facts") or []
+
         system_prompt = _build_system_prompt(
             npc_name=npc_name,
             npc_race=npc_race,
             npc_class=npc_class,
             npc_faction=npc_faction,
             location=location,
+            disposition_band=disposition_band,
+            last_mood=last_mood,
+            life_facts=life_facts,
         )
 
         # Build the user turn, prepending memory context if available
@@ -356,3 +387,64 @@ class LoreAgent:
             "tokens_used": total_tokens,
             "cost_usd": resp.cost_usd,
         }
+
+    async def generate_life_facts(
+        self,
+        npc_name: str,
+        npc_race: str,
+        npc_class: str,
+        npc_faction: str,
+    ) -> list[str]:
+        """
+        One-shot: invent 3 short non-plot life facts for this NPC.
+
+        Cached forever in DispositionStore once returned. Small models sometimes
+        wrap output in prose — we strip bullets and keep the first 3 useful lines.
+        """
+        race_blurb = RACE_PERSONALITIES.get(npc_race, f"A {npc_race} of Morrowind.")
+        faction_blurb = FACTION_NOTES.get(npc_faction, "")
+
+        system = (
+            "You invent personal colour for a Morrowind NPC. "
+            "Output THREE short life facts, one per line, no numbering, no prose. "
+            "Each fact is 1 sentence, NON-plot, NON-quest, mundane and human: a "
+            "dead sister, a coin collection, a fear of cliff racers, a grudge "
+            "against a neighbour. Grounded in Morrowind (3E 427). Avoid clichés."
+        )
+        user_parts = [
+            f"NPC: {npc_name}",
+            f"RACE: {npc_race}",
+            f"CLASS: {npc_class}",
+            f"FACTION: {npc_faction or 'None'}",
+            "",
+            f"Race note: {race_blurb}",
+        ]
+        if faction_blurb:
+            user_parts.append(f"Faction note: {faction_blurb}")
+        user_parts.append("")
+        user_parts.append("Return exactly three lines of life facts and nothing else.")
+        user = "\n".join(user_parts)
+
+        try:
+            resp = await call_with_retry(
+                lambda: self.llm.complete(
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    temperature=0.95,
+                    max_tokens=160,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("life_facts generation failed for %s: %s", npc_name, exc)
+            return []
+
+        log_llm_response("LoreAgent.life_facts", resp)
+
+        facts: list[str] = []
+        for raw in (resp.text or "").splitlines():
+            line = raw.strip().lstrip("-*•0123456789.) ").strip()
+            if len(line) >= 6 and not line.lower().startswith(("npc:", "race:", "class:", "faction:")):
+                facts.append(line)
+            if len(facts) >= 3:
+                break
+        return facts

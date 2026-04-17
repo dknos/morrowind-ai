@@ -74,16 +74,27 @@ def _now_iso() -> str:
 class OpenMWLogBridge:
     """Tail openmw.log, dispatch to lore_agent / d2d_agent, write inbox responses."""
 
-    def __init__(self, config: dict, lore_agent, memory, d2d_agent=None) -> None:
+    def __init__(
+        self,
+        config: dict,
+        lore_agent,
+        memory,
+        d2d_agent=None,
+        dispositions=None,
+    ) -> None:
         self.config = config
         self.lore_agent = lore_agent
         self.memory = memory
         self.d2d_agent = d2d_agent
+        self.dispositions = dispositions
         self._locked_npc: dict = {}  # most recent lock_npc context
         self._seen_req_ids: set[str] = set()
         self._counter: int = 0
         INBOX_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info("OpenMWLogBridge ready (log=%s inbox=%s)", OPENMW_LOG, RESPONSE_FILE)
+        logger.info(
+            "OpenMWLogBridge ready (log=%s inbox=%s disposition=%s)",
+            OPENMW_LOG, RESPONSE_FILE, "on" if dispositions else "off",
+        )
 
     # ------------------------------------------------------------------ tail
 
@@ -243,6 +254,31 @@ class OpenMWLogBridge:
             npc_id, limit=self.config.get("memory", {}).get("history_limit", 10)
         )
 
+        # Disposition context is optional — gated by features.disposition.
+        disp_band: Optional[str] = None
+        last_mood: Optional[str] = None
+        life_facts: list[str] = []
+        if self.dispositions is not None:
+            snap = self.dispositions.get(npc_id)
+            disp_band = self.dispositions.disposition_band(snap["disposition"])
+            last_mood = snap.get("last_mood")
+            life_facts = list(snap.get("life_facts") or [])
+
+            # First-ever interaction: generate 3 short life facts inline. Costs
+            # one extra LLM call ever, per NPC. Cached forever after.
+            if not life_facts and hasattr(self.lore_agent, "generate_life_facts"):
+                try:
+                    life_facts = await self.lore_agent.generate_life_facts(
+                        npc_name=ctx.get("npc_name", npc_id),
+                        npc_race=ctx.get("npc_race", "Dunmer"),
+                        npc_class=ctx.get("npc_class", "Commoner"),
+                        npc_faction=ctx.get("npc_faction", ""),
+                    )
+                    if life_facts:
+                        self.dispositions.set_life_facts(npc_id, life_facts)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("life_facts gen failed for %s: %s", npc_id, exc)
+
         try:
             agent_request = {
                 "npc_id": npc_id,
@@ -254,6 +290,9 @@ class OpenMWLogBridge:
                 "location": location,
                 "conversation_history": history,
                 "is_greeting": player_text == "",
+                "disposition_band": disp_band,
+                "last_mood": last_mood,
+                "life_facts": life_facts,
             }
             result = await self.lore_agent.generate_response(
                 agent_request, memory_context=history
@@ -272,7 +311,15 @@ class OpenMWLogBridge:
             npc_emotion  = "neutral"
             npc_action   = "none"
 
-        self.memory.store_exchange(npc_id, player_text, npc_response, location)
+        self.memory.store_exchange(
+            npc_id, player_text, npc_response, location,
+            emotion=npc_emotion, action=npc_action,
+        )
+        if self.dispositions is not None:
+            try:
+                self.dispositions.apply_turn(npc_id, npc_emotion, npc_action)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("disposition apply failed for %s: %s", npc_id, exc)
 
         # Reply req_id = echo of request so Lua dedup sees each new reply.
         reply = {
