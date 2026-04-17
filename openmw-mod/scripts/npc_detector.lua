@@ -1,55 +1,37 @@
 -- npc_detector.lua
 -- GLOBAL script.
--- Scans all active actors every frame (throttled).
--- Detects when two named NPCs are within 300 units of each other.
--- Writes an npc_npc event to ~/morrowind-ai/ipc/request.json.
+-- Scans all active actors every second (throttled).
+-- When two named NPCs are within PROXIMITY_THRESHOLD units and cooldown has
+-- elapsed, fires a [MWAI_REQ] print line that openmw_log_bridge.py tails.
 --
--- NOTE: Global scripts do NOT have openmw.nearby.
--- We use openmw.world.activeActors to enumerate all loaded actors.
---
+-- Windows-compatible: uses print() IPC, no io.open.
 -- OpenMW 0.49, Lua 5.1
 
 local core  = require('openmw.core')
 local world = require('openmw.world')
 local types = require('openmw.types')
-
 local json  = require('scripts.json')
 
 -- ============================================================
 -- Configuration
 -- ============================================================
 
-local REQUEST_FILE        = '/home/nemoclaw/morrowind-ai/ipc/request.json'
-local SCAN_INTERVAL       = 1.0    -- seconds between actor scans
-local PROXIMITY_THRESHOLD = 300    -- units (OpenMW engine units)
-local PAIR_COOLDOWN       = 60.0   -- seconds before the same pair fires again
+local SCAN_INTERVAL       = 1.0    -- seconds between scans
+local PROXIMITY_THRESHOLD = 300    -- engine units
+local PAIR_COOLDOWN       = 60.0   -- seconds before same pair fires again
+local REQ_COUNTER         = 0      -- incrementing req_id
 
 -- ============================================================
 -- State
 -- ============================================================
 
 local scanTimer  = 0
-local pairTimers = {}  -- key: "id_a|id_b" -> timestamp of last trigger
+local pairTimers = {}  -- "id_a|id_b" -> last trigger time
 
 -- ============================================================
 -- Helpers
 -- ============================================================
 
-local function write_file(path, content)
-    local ok, err = pcall(function()
-        local f, ferr = io.open(path, 'w')
-        if not f then error('io.open: ' .. tostring(ferr)) end
-        f:write(content)
-        f:close()
-    end)
-    if not ok then
-        print('[npc_detector] write_file error: ' .. tostring(err))
-        return false
-    end
-    return true
-end
-
--- Euclidean distance between two openmw.util.Vector3 positions.
 local function distance(posA, posB)
     local dx = posA.x - posB.x
     local dy = posA.y - posB.y
@@ -57,45 +39,29 @@ local function distance(posA, posB)
     return math.sqrt(dx*dx + dy*dy + dz*dz)
 end
 
--- Canonical pair key — always lower id first to avoid (A,B) vs (B,A) duplicates.
 local function pairKey(idA, idB)
-    if idA < idB then
-        return idA .. '|' .. idB
-    else
-        return idB .. '|' .. idA
-    end
+    return idA < idB and (idA .. '|' .. idB) or (idB .. '|' .. idA)
 end
 
--- Determine whether an actor is a named NPC (not a generic creature or unnamed service NPC).
--- In OpenMW 0.49, types.NPC identifies human/mer NPCs.
--- We also require a non-empty name.
 local function isNamedNpc(actor)
     local ok, result = pcall(function()
         if not types.NPC.objectIsInstance(actor) then return false end
         local rec = types.NPC.record(actor)
-        local name = rec.name or ''
-        return name ~= ''
+        return (rec.name or '') ~= ''
     end)
-    if not ok then return false end
-    return result
+    return ok and result
 end
 
--- Collect lightweight info table from an NPC actor.
 local function npcInfo(actor)
-    local info = {
-        id       = '',
-        name     = '',
-        position = nil,
-    }
-    local ok, err = pcall(function()
-        info.id       = tostring(actor.id or actor.recordId or '')
-        local rec     = types.NPC.record(actor)
-        info.name     = tostring(rec.name or '')
+    local info = { id = '', name = '', race = '', faction = '', position = nil }
+    pcall(function()
+        info.id = tostring(actor.id or actor.recordId or '')
+        local rec = types.NPC.record(actor)
+        info.name    = tostring(rec.name  or '')
+        info.race    = tostring(rec.race  or 'Unknown')
+        info.faction = tostring(rec.faction or '')
         info.position = actor.position
     end)
-    if not ok then
-        print('[npc_detector] npcInfo error: ' .. tostring(err))
-    end
     return info
 end
 
@@ -104,7 +70,6 @@ end
 -- ============================================================
 
 local function scanActors()
-    -- Collect all active NPC actors
     local npcs = {}
     local ok, err = pcall(function()
         for _, actor in ipairs(world.activeActors) do
@@ -117,77 +82,52 @@ local function scanActors()
         end
     end)
     if not ok then
-        print('[npc_detector] scan error collecting actors: ' .. tostring(err))
+        print('[npc_detector] scan error: ' .. tostring(err))
         return
     end
 
-    -- Current simulation time for cooldown checks
     local now = core.getSimulationTime()
 
-    -- Current cell name for the event payload
     local location = ''
-    local lok, lerr = pcall(function()
-        -- In global scripts we don't have a player reference directly.
-        -- Use the first actor's cell as a proxy, or leave blank.
-        if #npcs > 0 then
-            -- actor.cell is available in OpenMW 0.49 global scope
-            -- We'll iterate actors looking for the player-owned cell later.
-            -- For now use the world's player object if available.
-            local player = world.getPlayerObject and world.getPlayerObject()
-            if player then
-                local cell = player.cell
-                if cell then location = tostring(cell.name or '') end
-            end
-        end
+    pcall(function()
+        local player = world.getPlayerObject and world.getPlayerObject()
+        if player and player.cell then location = tostring(player.cell.name or '') end
     end)
-    if not lok then
-        print('[npc_detector] cell lookup error: ' .. tostring(lerr))
-    end
 
-    -- Check all NPC pairs for proximity
     for i = 1, #npcs do
         for j = i + 1, #npcs do
-            local a = npcs[i]
-            local b = npcs[j]
-
-            -- Skip if either position is nil
+            local a, b = npcs[i], npcs[j]
             if a.position and b.position then
                 local dist = distance(a.position, b.position)
                 if dist <= PROXIMITY_THRESHOLD then
                     local key = pairKey(a.id, b.id)
                     local lastTime = pairTimers[key] or -math.huge
-
-                    -- Only fire if cooldown has elapsed
                     if (now - lastTime) >= PAIR_COOLDOWN then
                         pairTimers[key] = now
-
+                        REQ_COUNTER = REQ_COUNTER + 1
                         local payload = {
-                            type      = 'npc_npc',
-                            npc_a_id  = a.id,
-                            npc_b_id  = b.id,
-                            npc_a_name = a.name,
-                            npc_b_name = b.name,
-                            location  = location,
-                            timestamp = now,
+                            type         = 'npc_npc',
+                            req_id       = 'npc_npc-' .. tostring(math.floor(now)) .. '-' .. REQ_COUNTER,
+                            npc_a_id     = a.id,
+                            npc_a_name   = a.name,
+                            npc_a_race   = a.race,
+                            npc_a_faction = a.faction,
+                            npc_b_id     = b.id,
+                            npc_b_name   = b.name,
+                            npc_b_race   = b.race,
+                            npc_b_faction = b.faction,
+                            location     = location,
+                            timestamp    = now,
                         }
-
-                        local encoded = ''
-                        local encOk, encErr = pcall(function()
-                            encoded = json.encode(payload)
-                        end)
+                        local encOk, encoded = pcall(json.encode, payload)
                         if encOk then
-                            local wrote = write_file(REQUEST_FILE, encoded)
-                            if wrote then
-                                print(string.format(
-                                    '[npc_detector] NPC pair detected: %s + %s (%.1f units)',
-                                    a.name, b.name, dist))
-                            end
+                            print('[MWAI_REQ] ' .. encoded)
+                            print(string.format('[npc_detector] D2D fired: %s + %s (%.1f units)',
+                                a.name, b.name, dist))
                         else
-                            print('[npc_detector] JSON encode error: ' .. tostring(encErr))
+                            print('[npc_detector] JSON encode error: ' .. tostring(encoded))
                         end
-
-                        -- Only write one event per scan to avoid overwriting
-                        -- request.json with a second pair immediately.
+                        -- one event per scan to avoid log spam
                         return
                     end
                 end
@@ -207,8 +147,8 @@ local function onUpdate(dt)
     scanActors()
 end
 
+print('[morrowind-ai][npc_detector] Loaded (print-IPC, Windows-compatible).')
+
 return {
-    engineHandlers = {
-        onUpdate = onUpdate,
-    },
+    engineHandlers = { onUpdate = onUpdate },
 }

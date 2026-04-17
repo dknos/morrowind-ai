@@ -41,9 +41,10 @@ logger = logging.getLogger(__name__)
 OPENMW_LOG = pathlib.Path(
     "/mnt/c/Users/rneeb/Documents/My Games/OpenMW/openmw.log"
 )
-MOD_ROOT   = pathlib.Path("/mnt/c/morrowind-ai-mod")
-INBOX_DIR  = MOD_ROOT / "ai_inbox"
-RESPONSE_FILE = INBOX_DIR / "response.txt"
+MOD_ROOT        = pathlib.Path("/mnt/c/morrowind-ai-mod")
+INBOX_DIR       = MOD_ROOT / "ai_inbox"
+RESPONSE_FILE   = INBOX_DIR / "response.txt"
+NPC_SPEECH_FILE = INBOX_DIR / "npc_speech.txt"
 PLAYER_TEXT_FILE = INBOX_DIR / "player_text.txt"  # written by chat_window_vfs.py
 
 # Lua tag prefixes emitted via print()
@@ -71,12 +72,13 @@ def _now_iso() -> str:
 
 
 class OpenMWLogBridge:
-    """Tail openmw.log, dispatch to lore_agent, write inbox responses."""
+    """Tail openmw.log, dispatch to lore_agent / d2d_agent, write inbox responses."""
 
-    def __init__(self, config: dict, lore_agent, memory) -> None:
+    def __init__(self, config: dict, lore_agent, memory, d2d_agent=None) -> None:
         self.config = config
         self.lore_agent = lore_agent
         self.memory = memory
+        self.d2d_agent = d2d_agent
         self._locked_npc: dict = {}  # most recent lock_npc context
         self._seen_req_ids: set[str] = set()
         self._counter: int = 0
@@ -198,13 +200,44 @@ class OpenMWLogBridge:
         if rtype == "dialogue":
             await self._handle_dialogue(req)
             return
+        if rtype == "npc_npc":
+            await self._handle_d2d(req)
+            return
         logger.warning("unknown MWAI type '%s'", rtype)
+
+    async def _handle_d2d(self, req: dict) -> None:
+        if not self.d2d_agent:
+            logger.debug("D2D event received but no d2d_agent configured — skipping")
+            return
+        try:
+            result = await self.d2d_agent.generate(req)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("d2d_agent failed: %s", exc, exc_info=True)
+            return
+
+        payload = {
+            "req_id": result.get("req_id", req.get("req_id")),
+            "exchanges": result.get("exchanges", []),
+            "timestamp": _now_iso(),
+        }
+        try:
+            _atomic_write_text(NPC_SPEECH_FILE, json.dumps(payload, ensure_ascii=False))
+            logger.info(
+                "D2D wrote %d exchanges for req_id=%s",
+                len(payload["exchanges"]), payload["req_id"],
+            )
+        except OSError as exc:
+            logger.error("could not write npc_speech.txt: %s", exc)
 
     async def _handle_dialogue(self, req: dict) -> None:
         ctx = self._locked_npc or {}
         npc_id = req.get("npc_id") or ctx.get("npc_id") or "unknown_npc"
         location = req.get("location") or ctx.get("location") or "unknown"
         player_text = req.get("player_text", "")
+
+        # Auto-greeting: player locked on NPC, no text yet (kenshi __greet__ equivalent)
+        if player_text == "__greet__":
+            player_text = ""   # lore_agent will generate a greeting unprompted
 
         history = self.memory.get_history(
             npc_id, limit=self.config.get("memory", {}).get("history_limit", 10)
@@ -220,16 +253,24 @@ class OpenMWLogBridge:
                 "player_input": player_text,
                 "location": location,
                 "conversation_history": history,
+                "is_greeting": player_text == "",
             }
             result = await self.lore_agent.generate_response(
                 agent_request, memory_context=history
             )
-            npc_response = (
-                result.get("response", "...") if isinstance(result, dict) else str(result)
-            )
+            if isinstance(result, dict):
+                npc_response = result.get("response", "...")
+                npc_emotion  = result.get("emotion",  "neutral")
+                npc_action   = result.get("action",   "none")
+            else:
+                npc_response = str(result)
+                npc_emotion  = "neutral"
+                npc_action   = "none"
         except Exception as exc:  # noqa: BLE001
             logger.error("lore_agent failed: %s", exc, exc_info=True)
             npc_response = "..."
+            npc_emotion  = "neutral"
+            npc_action   = "none"
 
         self.memory.store_exchange(npc_id, player_text, npc_response, location)
 
@@ -239,6 +280,8 @@ class OpenMWLogBridge:
             "type": "dialogue",
             "npc_id": npc_id,
             "npc_response": npc_response,
+            "emotion": npc_emotion,
+            "action": npc_action,
             "location": location,
             "timestamp": _now_iso(),
         }

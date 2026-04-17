@@ -116,6 +116,15 @@ def _try_import_pixel_agent():
         return None
 
 
+def _try_import_d2d_agent():
+    try:
+        from agents.d2d_agent import D2DAgent  # type: ignore
+        return D2DAgent
+    except ImportError as exc:
+        logging.warning("D2DAgent not available: %s", exc)
+        return None
+
+
 def _try_import_obs_director():
     try:
         from agents.obs_director import OBSDirector  # type: ignore
@@ -266,6 +275,22 @@ async def main() -> None:
                 logger.warning("OBSDirector failed to connect: %s — OBS disabled", exc)
                 obs_director = None
 
+    # D2DAgent (radiant ambient NPC-to-NPC dialogue)
+    d2d_agent = None
+    if config.get("radiant", {}).get("enabled", True):
+        D2DAgentClass = _try_import_d2d_agent()
+        if D2DAgentClass is not None:
+            try:
+                d2d_agent = D2DAgentClass(config)
+                logger.info("D2DAgent initialised")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("D2DAgent failed to initialise: %s — radiant D2D disabled", exc)
+
+    # OpenMWLogBridge (Windows IPC via openmw.log tailing)
+    from openmw_log_bridge import OpenMWLogBridge
+    log_bridge = OpenMWLogBridge(config, lore_agent, memory, d2d_agent=d2d_agent)
+    logger.info("OpenMWLogBridge initialised")
+
     # IPCBridge (always runs — this is the core of the system)
     from bridge import IPCBridge
     bridge = IPCBridge(
@@ -300,6 +325,9 @@ async def main() -> None:
 
     bridge_task = loop.create_task(bridge.run(), name="ipc-bridge")
     tasks.append(bridge_task)
+
+    log_bridge_task = loop.create_task(log_bridge.run(), name="log-bridge")
+    tasks.append(log_bridge_task)
 
     if pixel_enabled and pixel_agent is not None and hasattr(pixel_agent, "capture_loop"):
         pixel_task = loop.create_task(pixel_agent.capture_loop(), name="pixel-agent")

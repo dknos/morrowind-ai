@@ -1,9 +1,7 @@
 -- world_events.lua
 -- GLOBAL script.
--- Minimal stub for MVP: event-driven world actions (spawn_enemy, drop_item,
--- message) triggered via global Lua events, NOT filesystem polling.
--- Python bridge can fire these via a separate IPC path later; for now this
--- keeps the mod loadable without sandbox-violating io.popen/ls calls.
+-- Handles world action events (spawn_enemy, drop_item, message) and
+-- forwards NPC speech (ambient D2D) to the player HUD.
 --
 -- OpenMW 0.49, Lua 5.1
 
@@ -17,13 +15,13 @@ local function getPlayer()
     return nil
 end
 
--- Event handlers (triggered via core.sendGlobalEvent from other scripts) ----
+-- ── World action handlers ─────────────────────────────────────────────────────
 
 local function onSpawnEnemy(ev)
     if not ev or not ev.creature_id then return end
     local ok, err = pcall(function()
         local pos = util.vector3(tonumber(ev.x) or 0, tonumber(ev.y) or 0, tonumber(ev.z) or 0)
-        local player = getPlayer()
+        local player  = getPlayer()
         local cellName = tostring(ev.cell or (player and player.cell and player.cell.name) or '')
         if cellName == '' then return end
         local obj = world.createObject(ev.creature_id, 1)
@@ -51,12 +49,30 @@ local function onMessage(ev)
     end
 end
 
-print('[morrowind-ai][world_events] Loaded (event-driven; filesystem polling disabled).')
+-- ── NPC action handler (from lore_agent ACTION: tag) ─────────────────────────
+-- Global script receives the action event and forwards to player for display.
+-- Actual game-state effects (hostile AI, follow AI) would require scripted
+-- AI packages beyond the current scope — display only for now.
+
+local function onNpcAction(ev)
+    if not ev or not ev.action then return end
+    local player = getPlayer()
+    if player then
+        player:sendEvent('MorrowindAiAction', {
+            npc_name = tostring(ev.npc_name or 'NPC'),
+            npc_id   = tostring(ev.npc_id   or ''),
+            action   = tostring(ev.action),
+        })
+    end
+end
+
+print('[morrowind-ai][world_events] Loaded.')
 
 return {
     eventHandlers = {
         MorrowindAiSpawnEnemy = onSpawnEnemy,
         MorrowindAiDropItem   = onDropItem,
         MorrowindAiMessage    = onMessage,
+        MorrowindAiNpcAction  = onNpcAction,
     },
 }

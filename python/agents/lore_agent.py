@@ -104,13 +104,24 @@ EMOTION_GUIDE = (
 )
 
 RESPONSE_SCHEMA = """\
-Your reply MUST follow this exact two-part format with no extra text before or after:
+Your reply MUST follow this exact format (no extra text before or after):
 
 <npc_response>
 [Your in-character dialogue here — 1 to 3 sentences maximum]
 </npc_response>
 EMOTION:<emotion_word>
+ACTION:<action_word>
+
+ACTION must be exactly one of: none, follow, flee, attack, trade
+Use 'none' unless the NPC would genuinely want to follow/flee/attack/trade based on context.
 """
+
+ACTION_GUIDE = (
+    "If the conversation warrants it, the NPC may request a world action. "
+    "Return ACTION:follow if the NPC would offer to follow the player, "
+    "ACTION:flee if frightened into leaving, ACTION:attack if provoked to hostility, "
+    "ACTION:trade if opening commerce. Otherwise ACTION:none."
+)
 
 
 def _build_system_prompt(
@@ -154,13 +165,15 @@ def _build_system_prompt(
         "",
         EMOTION_GUIDE,
         "",
+        ACTION_GUIDE,
+        "",
         RESPONSE_SCHEMA,
     ]
 
     return "\n".join(parts)
 
 
-def _parse_response(raw_text: str) -> tuple[str, str]:
+def _parse_response(raw_text: str) -> tuple[str, str, str]:
     """
     Parse the model output into (dialogue_text, emotion).
 
@@ -169,32 +182,38 @@ def _parse_response(raw_text: str) -> tuple[str, str]:
         Some dialogue here.
         </npc_response>
         EMOTION:neutral
+        ACTION:none
     """
     dialogue = ""
-    emotion = "neutral"
+    emotion  = "neutral"
+    action   = "none"
 
     try:
         start = raw_text.index("<npc_response>") + len("<npc_response>")
         end = raw_text.index("</npc_response>")
         dialogue = raw_text[start:end].strip()
     except ValueError:
-        # Fallback: strip tags and use the whole text
         dialogue = raw_text.replace("<npc_response>", "").replace("</npc_response>", "").strip()
-        # Remove the EMOTION line if present
-        lines = [l for l in dialogue.splitlines() if not l.startswith("EMOTION:")]
+        lines = [l for l in dialogue.splitlines()
+                 if not l.startswith("EMOTION:") and not l.startswith("ACTION:")]
         dialogue = " ".join(lines).strip()
 
     for line in raw_text.splitlines():
         stripped = line.strip()
         if stripped.startswith("EMOTION:"):
             emotion = stripped[len("EMOTION:"):].strip().lower()
-            break
+        elif stripped.startswith("ACTION:"):
+            action = stripped[len("ACTION:"):].strip().lower()
 
     valid_emotions = {"neutral", "happy", "angry", "fearful", "disgusted", "surprised"}
     if emotion not in valid_emotions:
         emotion = "neutral"
 
-    return dialogue, emotion
+    valid_actions = {"none", "follow", "flee", "attack", "trade"}
+    if action not in valid_actions:
+        action = "none"
+
+    return dialogue, emotion, action
 
 
 class LoreAgent:
@@ -263,6 +282,7 @@ class LoreAgent:
         npc_faction = request.get("npc_faction", "")
         location = request.get("location", "Vvardenfell")
         player_input = request.get("player_input", "")
+        is_greeting: bool = request.get("is_greeting", player_input == "")
         conversation_history: list[dict] = request.get("conversation_history", [])
 
         system_prompt = _build_system_prompt(
@@ -299,7 +319,13 @@ class LoreAgent:
                     "RECENT CONVERSATION:\n" + "\n".join(history_lines)
                 )
 
-        user_parts.append(f"PLAYER SAYS: {player_input}")
+        if is_greeting:
+            user_parts.append(
+                "The player has just approached and made eye contact. "
+                "Greet them in character — a short, natural opening line appropriate to this NPC's personality."
+            )
+        else:
+            user_parts.append(f"PLAYER SAYS: {player_input}")
         user_message = "\n\n".join(user_parts)
 
         messages = [{"role": "user", "content": user_message}]
@@ -313,22 +339,20 @@ class LoreAgent:
             )
         )
 
-        dialogue, emotion = _parse_response(resp.text)
+        dialogue, emotion, action = _parse_response(resp.text)
         total_tokens = resp.tokens_in + resp.tokens_out
 
         log_llm_response("LoreAgent", resp)
 
         logger.debug(
-            "LoreAgent | npc=%s | tokens=%d | cost=$%.5f | emotion=%s",
-            npc_name,
-            total_tokens,
-            resp.cost_usd,
-            emotion,
+            "LoreAgent | npc=%s | tokens=%d | cost=$%.5f | emotion=%s | action=%s",
+            npc_name, total_tokens, resp.cost_usd, emotion, action,
         )
 
         return {
             "response": dialogue,
             "emotion": emotion,
+            "action": action,
             "tokens_used": total_tokens,
             "cost_usd": resp.cost_usd,
         }

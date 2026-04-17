@@ -22,6 +22,10 @@ models:
     provider: gemini
     model: gemini-3.1-flash-lite-preview
     temperature: 0.8
+  d2d_agent:          # radiant ambient NPC-to-NPC dialogue
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    temperature: 0.9
   pixel_agent:        # needs vision support — do NOT use llamacpp here
     provider: gemini
     model: gemini-3.1-flash-lite-preview
@@ -52,6 +56,16 @@ gemini:
   pixel_agent_temp: 0.3
   director_agent_temp: 0.2
   max_retries: 3
+
+# Campaign identifier — included in all AI requests for persistent cross-session context.
+campaign_id: "morrowind-default"
+
+# Radiant ambient dialogue settings (NPC-to-NPC D2D system).
+radiant:
+  enabled: true
+  # Lua-side cooldown (PAIR_COOLDOWN in npc_detector.lua) controls how often the
+  # same NPC pair can trigger; this is just the Python-side gate if needed.
+  min_interval_s: 60
 
 ipc:
   dir: /home/nemoclaw/morrowind-ai/ipc
