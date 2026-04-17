@@ -102,6 +102,7 @@ local function buildLayout()
     local inputText = '> ' .. inputBuffer .. '_'
 
     return {
+        layer = 'HUD',
         type = ui.TYPE.Flex,
         props = {
             size = v2(520, 200),

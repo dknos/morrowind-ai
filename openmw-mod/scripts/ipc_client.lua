@@ -154,6 +154,8 @@ local function pollDialogueResponse()
         player:sendEvent('MorrowindAiDialogueReply', {
             npc_id       = tostring(decoded.npc_id or ''),
             npc_response = text,
+            emotion      = tostring(decoded.emotion or 'neutral'),
+            action       = tostring(decoded.action  or 'none'),
         })
     end
 end
