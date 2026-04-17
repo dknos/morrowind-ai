@@ -1,13 +1,17 @@
 # morrowind-ai
 
-LLM-driven NPC dialogue for **OpenMW 0.49** — persistent per-NPC memory, live conversation, runs alongside the unmodified game on Windows or Linux.
+> **⚠️ Work in progress.** Core dialogue works. Radiant ambient D2D and NPC actions are newly added and not yet field-tested in-game. Expect rough edges.
+
+LLM-driven NPC dialogue for **OpenMW 0.49** — persistent per-NPC memory, live conversation, radiant ambient NPC-to-NPC chatter, runs alongside the unmodified game on Windows or Linux.
 
 ![Vodunius Nuccius asking the player about his ring — live LLM dialogue with memory across turns](docs/screenshot-vodunius.png)
 
 ## What it does
 
-- Press **H** near any NPC to lock onto them.
-- Type in an external chat window → the NPC replies in-game using Gemini / OpenAI / Claude / Ollama.
+- Press **H** near any NPC to lock onto them — they greet you automatically (no typed input needed).
+- Type a message → the NPC replies in-game using Gemini / OpenAI / Claude / Ollama, coloured by emotion.
+- NPCs can respond with actions: follow you, flee, turn hostile, or open trade.
+- Nearby NPC pairs hold ambient conversations without player involvement (radiant D2D system).
 - Every exchange is stored in a per-NPC ChromaDB vector collection, so NPCs remember you across sessions.
 
 ## Why this exists (the novel part)
@@ -24,31 +28,47 @@ Combined with per-NPC ChromaDB memory and a provider-agnostic agent layer, this 
 ## Architecture
 
 ```
-+------------------+         print('[MWAI_REQ] ...')        +---------------------+
-| OpenMW Lua       | ---------------------------------> tail | openmw_log_bridge   |
-| (ipc_client.lua, |                                         | (Python, asyncio)   |
-|  dialogue_ui)    | <--- vfs.open('ai_inbox/response.txt') -|  + lore_agent       |
-+------------------+                                         |  + NPCMemory (Chroma)|
-                                                             +---------------------+
-                                                                      |
-                                                              provider (Gemini /
-                                                               OpenAI / Claude /
-                                                               Ollama / llama.cpp)
++------------------+  print('[MWAI_REQ] ...')   +-------------------------+
+| OpenMW Lua       | -------------------------> tail | openmw_log_bridge   |
+|                  |                             | (Python, asyncio)       |
+| dialogue_ui.lua  |  vfs 'ai_inbox/response'   |  + lore_agent           |
+| ipc_client.lua   | <-------------------------- |  + d2d_agent (radiant)  |
+| npc_detector.lua |                             |  + NPCMemory (Chroma)   |
+| world_events.lua |  vfs 'ai_inbox/npc_speech'  |                         |
+|                  | <-- (NPC-to-NPC D2D lines)- +-------------------------+
++------------------+                                        |
+                                                    provider (Gemini /
+                                                     OpenAI / Claude /
+                                                     Ollama / llama.cpp)
 ```
 
-Linux users can also use the simpler `bridge.py` path (direct file IPC at `ipc/request.json`), since Linux OpenMW exposes `io` in global scripts.
+**Dialogue flow:**
+1. Player presses **H** → `dialogue_ui.lua` sends `MorrowindAiDialogueRequest` event
+2. `ipc_client.lua` (global) prints `[MWAI_REQ] {type:"dialogue",...}` to openmw.log
+3. Python bridge tails the log, dispatches to `lore_agent`, writes `ai_inbox/response.txt`
+4. `ipc_client.lua` polls VFS response file, relays reply to player script via event
+
+**Radiant D2D (ambient chatter):**
+1. `npc_detector.lua` scans active actors each second; when two named NPCs are ≤300 units apart (60s cooldown), prints `[MWAI_REQ] {type:"npc_npc",...}`
+2. Python `d2d_agent` generates a 2–4 line exchange grounded in race/faction personality
+3. Python writes exchanges to `ai_inbox/npc_speech.txt`
+4. `ipc_client.lua` polls the file and drains lines to the HUD one at a time (3.5s gap)
+
+Linux users can also use the simpler `bridge.py` path (direct file IPC), since Linux OpenMW exposes `io` in global scripts.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `openmw-mod/` | Lua scripts — dialogue UI, IPC client, game-side handlers |
-| `python/openmw_log_bridge.py` | Windows sandbox bridge (vfs + print) |
+| `openmw-mod/` | Lua scripts — dialogue UI, IPC, NPC detector, world events |
+| `openmw-mod/scripts/npc_detector.lua` | Radiant NPC pair scanner |
+| `python/openmw_log_bridge.py` | Windows sandbox bridge (vfs + print-IPC) |
 | `python/bridge.py` | Linux direct file-IPC bridge |
-| `python/agents/lore_agent.py` | NPC dialogue generation |
+| `python/agents/lore_agent.py` | Player↔NPC dialogue (emotion + action tags) |
+| `python/agents/d2d_agent.py` | Ambient NPC-to-NPC radiant dialogue |
 | `python/memory/chroma_memory.py` | Per-NPC ChromaDB memory |
 | `python/providers/` | Gemini / OpenAI / Anthropic / Ollama / llama.cpp |
-| `python/config.yaml` | Per-agent provider + model selection |
+| `python/config.yaml` | Per-agent provider + model, campaign_id, radiant config |
 
 ## Install
 
@@ -84,7 +104,35 @@ Leave `enabled: false` for normal single-player use.
 
 ## Status
 
-Working on: OpenMW 0.49 (Windows + Linux), Gemini 3.1 Flash Lite Preview, ChromaDB embedded.
+| Feature | State |
+|---|---|
+| H-key NPC lock + auto-greeting | Working |
+| Typed player→NPC dialogue | Working |
+| Per-NPC ChromaDB memory | Working |
+| Emotion-coloured NPC replies | Working |
+| Windows sandbox IPC (print + VFS) | Working |
+| Radiant NPC-to-NPC ambient D2D | **Added — not yet field-tested** |
+| NPC action responses (follow/flee/attack/trade) | **Added — not yet field-tested** |
+| NPC faction/race personality grounding | Working |
+| YouTube live-chat → game events | Stub (disabled by default) |
+| Linux direct-file IPC path | Working |
+
+Tested on OpenMW 0.49 (Windows + WSL), Gemini 3.1 Flash Lite Preview, ChromaDB embedded.
+
+### Known limitations / rough edges
+
+- VFS polling for `ai_inbox/response.txt` requires `data=<mod-root>` in `openmw.cfg` — see Install step 2.
+- Radiant D2D lines are displayed as HUD messages; no speech bubbles or voiced audio yet.
+- NPC action tags (`ACTION:follow` etc.) display a HUD notification but do not yet change AI packages or game state — that requires `openmw.types.Actor` AI queue calls, planned next.
+- The `openmw.vfs` module must be available (OpenMW 0.49+). Earlier builds will fall back silently to `io.open`.
+
+## Roadmap
+
+- [ ] Test radiant D2D and NPC actions in-game, fix any issues
+- [ ] Wire `ACTION:follow` / `ACTION:attack` to actual OpenMW AI packages
+- [ ] Faction disposition modifiers based on conversation outcomes
+- [ ] Proactive NPC greeting radius (NPC initiates when player enters range)
+- [ ] Voiced responses via TTS pipeline
 
 ## License
 
